@@ -1,0 +1,56 @@
+From 0e5dbe0f949f2464f181ef7ac2c243581a075a34 Mon Sep 17 00:00:00 2001
+From: Lin <lin@fnxln.com>
+Date: Fri, 29 May 2026 16:56:02 -0300
+Subject: [PATCH] arch/arm64/ginkgo: enable KernelSU + SUSFS feature flags
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+CONFIG_KSU=y
+CONFIG_KSU_MANUAL_HOOK=y           (not KPROBES_HOOK — 4.14 non-GKI)
+CONFIG_KSU_SUSFS=y
+CONFIG_KSU_SUSFS_SUS_PATH=y
+CONFIG_KSU_SUSFS_SUS_MOUNT=y
+CONFIG_KSU_SUSFS_SUS_KSTAT=y
+CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+CONFIG_KSU_SUSFS_ENABLE_LOG=y
+CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+CONFIG_KSU_SUSFS_SUS_MAP=y
+
+Merged into the trinket-perf_defconfig + xiaomi-trinket.config base
+at make time. No CONFIG_KSU_SUSFS_ENABLE_AVC_LOG_SPOOFING since the
+selinux/avc.c read hook is not patched in.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ arch/arm64/configs/vendor/ginkgo.config | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/arch/arm64/configs/vendor/ginkgo.config b/arch/arm64/configs/vendor/ginkgo.config
+index 84a4e4e86cc4..95f275c1002f 100644
+--- a/arch/arm64/configs/vendor/ginkgo.config
++++ b/arch/arm64/configs/vendor/ginkgo.config
+@@ -16,3 +16,20 @@ CONFIG_NFC_NQ=y
+ CONFIG_TOUCHSCREEN_NT36xxx_HOSTDL_SPI_C3J=y
+ CONFIG_TOUCHSCREEN_FTS_C3J=y
+ CONFIG_TOUCHSCREEN_XIAOMI_C3J=y
++# KernelSU-Next + SUSFS v2.0.0 (de-inlined)
++CONFIG_KSU=y
++CONFIG_KSU_MANUAL_HOOK=y
++# CONFIG_KSU_KPROBES_HOOK is not set
++CONFIG_KSU_SUSFS=y
++CONFIG_KSU_SUSFS_SUS_PATH=y
++CONFIG_KSU_SUSFS_SUS_MOUNT=y
++CONFIG_KSU_SUSFS_SUS_KSTAT=y
++CONFIG_KSU_SUSFS_TRY_UMOUNT=y
++CONFIG_KSU_SUSFS_SPOOF_UNAME=y
++CONFIG_KSU_SUSFS_ENABLE_LOG=y
++CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
++CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
++CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
++CONFIG_KSU_SUSFS_SUS_MAP=y
++# Clang 18 compat: novos warnings que viraram erro
++CONFIG_CC_DISABLE_WARN_MAYBE_UNINITIALIZED=y

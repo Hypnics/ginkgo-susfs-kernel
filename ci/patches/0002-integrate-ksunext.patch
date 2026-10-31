@@ -1,0 +1,79 @@
+From 80cdcac86b215e9339775568ab86c7bdad7396b2 Mon Sep 17 00:00:00 2001
+From: Lin <lin@fnxln.com>
+Date: Fri, 29 May 2026 16:55:27 -0300
+Subject: [PATCH] drivers: integrate KernelSU-Next v3.1.0-legacy-susfs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add KSU-Next submodule pinned at v3.1.0-legacy-susfs (commit ba4422f,
+'kernel: implement susfs v2.0.0 de-inlined with try_umount feature').
+This tag uses manual hooks (sys_reboot, setresuid, etc) instead of
+kprobes, which is the correct choice for non-GKI 4.14 kernels.
+
+- KernelSU-Next/ — submodule at tag v3.1.0-legacy-susfs
+- drivers/kernelsu — symlink to KernelSU-Next/kernel (KSU build entry)
+- drivers/Kconfig — source drivers/kernelsu/Kconfig
+- drivers/Makefile — obj-$(CONFIG_KSU) += kernelsu/
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ .gitignore       | 1 +
+ .gitmodules      | 4 ++++
+ drivers/Kconfig  | 1 +
+ drivers/Makefile | 2 ++
+ drivers/kernelsu | 1 +
+ 5 files changed, 9 insertions(+)
+ create mode 100644 .gitmodules
+ create mode 120000 drivers/kernelsu
+
+diff --git a/.gitignore b/.gitignore
+index b88350d27aaa..f34dbc70609c 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -73,6 +73,7 @@ modules.builtin
+ # git files that we don't want to ignore even if they are dot-files
+ #
+ !.gitignore
++!.gitmodules
+ !.mailmap
+ !.cocciconfig
+ 
+diff --git a/.gitmodules b/.gitmodules
+new file mode 100644
+index 000000000000..e57f7cea3b9b
+--- /dev/null
++++ b/.gitmodules
+@@ -0,0 +1,4 @@
++[submodule "KernelSU-Next"]
++	path = KernelSU-Next
++	url = https://github.com/KernelSU-Next/KernelSU-Next.git
++	branch = v3.1.0-legacy-susfs
+diff --git a/drivers/Kconfig b/drivers/Kconfig
+index 43377a3acb97..da512899005d 100644
+--- a/drivers/Kconfig
++++ b/drivers/Kconfig
+@@ -225,4 +225,5 @@ source "drivers/sensors/Kconfig"
+ 
+ source "drivers/esoc/Kconfig"
+ 
++source "drivers/kernelsu/Kconfig"
+ endmenu
+diff --git a/drivers/Makefile b/drivers/Makefile
+index 4a067525bbdc..d9d5779bf30d 100644
+--- a/drivers/Makefile
++++ b/drivers/Makefile
+@@ -191,3 +191,5 @@ obj-$(CONFIG_ESOC)              += esoc/
+ # GNSS driver
+ obj-$(CONFIG_GNSS_SIRF)		+= gnsssirf/
+ obj-$(CONFIG_GNSS)		+= gnss/
++
++obj-$(CONFIG_KSU) += kernelsu/
+diff --git a/drivers/kernelsu b/drivers/kernelsu
+new file mode 120000
+index 000000000000..b32a3654a683
+--- /dev/null
++++ b/drivers/kernelsu
+@@ -0,0 +1 @@
++../KernelSU-Next/kernel
+\ No newline at end of file

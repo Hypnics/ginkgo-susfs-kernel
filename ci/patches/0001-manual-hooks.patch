@@ -1,0 +1,132 @@
+From a7479c827c23d05582d4255c5b35082996a8c563 Mon Sep 17 00:00:00 2001
+From: Lin <lin@fnxln.com>
+Date: Fri, 29 May 2026 16:55:39 -0300
+Subject: [PATCH] kernel/security: wire KernelSU manual hooks for 4.14 non-GKI
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Replace kprobes-based KSU integration with direct in-tree hook calls,
+which is the required path for kernel 4.14 (kprobe coverage is too
+limited / unstable on this LTS branch).
+
+- kernel/reboot.c — call ksu_handle_sys_reboot() from SYSCALL_DEFINE4
+  before reboot validation, so CMD_SUSFS_* + CMD_KSU_* magic syscalls
+  are intercepted
+- fs/internal.h, fs/namespace.c — export sys_umount/path helpers KSU
+  needs for kernel-side umount of sus mounts
+- include/linux/seccomp.h — export seccomp helpers used by KSU
+  capability path
+- security/selinux/hooks.c, include/objsec.h, selinuxfs.c, xfrm.c —
+  expose internal SELinux helpers (sid lookup, cred update) to KSU
+  so it can set zygote/ksu/init/priv_app SIDs at boot
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ fs/internal.h                     |  1 +
+ fs/namespace.c                    | 30 ++++++++++++++++++++++++++++++
+ include/linux/seccomp.h           |  2 ++
+ kernel/reboot.c                   |  7 +++++++
+ security/selinux/hooks.c          | 26 +++++++++++++-------------
+ security/selinux/include/objsec.h | 11 +++++++++++
+ security/selinux/selinuxfs.c      |  4 ++--
+ security/selinux/xfrm.c           |  4 ++--
+ 8 files changed, 68 insertions(+), 17 deletions(-)
+
+diff --git a/fs/internal.h b/fs/internal.h
+index 204e1e253283..dffebf7b32f3 100644
+--- a/fs/internal.h
++++ b/fs/internal.h
+@@ -68,6 +68,7 @@ extern int finish_automount(struct vfsmount *, struct path *);
+ extern int sb_prepare_remount_readonly(struct super_block *);
+ 
+ extern void __init mnt_init(void);
++int path_umount(struct path *path, int flags);
+ 
+ extern int __mnt_want_write(struct vfsmount *);
+ extern int __mnt_want_write_file(struct file *);
+diff --git a/fs/namespace.c b/fs/namespace.c
+index d772fe46e6b5..e3f66331969c 100644
+--- a/fs/namespace.c
++++ b/fs/namespace.c
+@@ -1825,6 +1825,36 @@ SYSCALL_DEFINE1(oldumount, char __user *, name)
+ 
+ #endif
+ 
++static int can_umount(const struct path *path, int flags)
++ {
++	 struct mount *mnt = real_mount(path->mnt);
++	 if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
++		 return -EINVAL;
++	 if (!may_mount())
++		 return -EPERM;
++	 if (path->dentry != path->mnt->mnt_root)
++		 return -EINVAL;
++	 if (!check_mnt(mnt))
++		 return -EINVAL;
++	 if (mnt->mnt.mnt_flags & MNT_LOCKED)
++		 return -EINVAL;
++	 if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
++		 return -EPERM;
++	 return 0;
++ }
++
++int path_umount(struct path *path, int flags)
++ {
++	 struct mount *mnt = real_mount(path->mnt);
++	 int ret;
++	 ret = can_umount(path, flags);
++	 if (!ret)
++		 ret = do_umount(mnt, flags);
++	 dput(path->dentry);
++	 mntput_no_expire(mnt);
++	 return ret;
++ }
++
+ static bool is_mnt_ns_file(struct dentry *dentry)
+ {
+ 	/* Is this a proxy for a mount namespace? */
+diff --git a/include/linux/seccomp.h b/include/linux/seccomp.h
+index a9d5c52de4ea..4adb3b100d70 100644
+--- a/include/linux/seccomp.h
++++ b/include/linux/seccomp.h
+@@ -11,6 +11,7 @@
+ #ifdef CONFIG_SECCOMP
+ 
+ #include <linux/thread_info.h>
++#include <linux/atomic.h>
+ #include <asm/seccomp.h>
+ 
+ struct seccomp_filter;
+@@ -27,6 +28,7 @@ struct seccomp_filter;
+  */
+ struct seccomp {
+ 	int mode;
++	atomic_t filter_count;
+ 	struct seccomp_filter *filter;
+ };
+ 
+diff --git a/kernel/reboot.c b/kernel/reboot.c
+index 2946ed1d99d4..b2d146601e20 100644
+--- a/kernel/reboot.c
++++ b/kernel/reboot.c
+@@ -277,12 +277,19 @@ static DEFINE_MUTEX(reboot_mutex);
+  *
+  * reboot doesn't sync: do that yourself before calling this.
+  */
++#ifdef CONFIG_KSU
++extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
++				 void __user **arg);
++#endif
+ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
+ 		void __user *, arg)
+ {
+ 	struct pid_namespace *pid_ns = task_active_pid_ns(current);
+ 	char buffer[256];
+ 	int ret = 0;
++#ifdef CONFIG_KSU
++	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
++#endif
+ 
+ 	/* We only trust the superuser with rebooting the system. */
+ 	if (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))

@@ -1,4 +1,4 @@
-name: Build KSU-Next + SUSFS kernel (ginkgo)
+name: Build KSU-Next + SUSFS kernel on LineageOS 23.2 base
 
 on:
   workflow_dispatch:
@@ -10,6 +10,8 @@ on:
 
 env:
   LOS_URL: https://mirrorbits.lineageos.org/full/ginkgo
+  KERNEL_REPO: https://github.com/LineageOS/android_kernel_xiaomi_sm6125.git
+  KERNEL_BRANCH: lineage-23.2
   KSU_TAG: v3.1.0
 
 jobs:
@@ -18,27 +20,11 @@ jobs:
     timeout-minutes: 240
 
     steps:
-      - name: Checkout kernel tree
+      - name: Checkout CI helpers
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          path: ci
           fetch-depth: 1
-
-      - name: Pin KernelSU-Next submodule commit
-        run: |
-          # The parent repo's gitlink is the exact v3.1.0-legacy-susfs tree.
-          # A shallow fetch by SHA alone can miss it, so fetch the tag too.
-          cd KernelSU-Next
-          git fetch --depth 1 origin tag v3.1.0-legacy --no-tags 2>/dev/null || true
-          git log --oneline -1
-          # Kbuild derives KSU_VERSION from `git rev-list --count HEAD`, which
-          # needs full history. Unshallow just this small submodule.
-          git fetch --unshallow --tags 2>/dev/null || git fetch --tags
-          echo "version count: $(git rev-list --count HEAD)"
-          echo "tag: $(git describe --tags 2>/dev/null)"
-
-      - name: Apply KernelSU-Next local patches
-        run: bash patches/apply.sh
 
       - name: Free disk space
         run: |
@@ -56,6 +42,40 @@ jobs:
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
           df -h /
 
+      - name: Clone LineageOS 23.2 kernel source
+        run: |
+          git clone --depth 1 --branch "$KERNEL_BRANCH" "$KERNEL_REPO" kernel-src
+          cd kernel-src
+          git log --oneline -1
+          make -s kernelversion
+
+      - name: Add KernelSU-Next submodule
+        run: |
+          cd kernel-src
+          git clone --branch v3.1.0-legacy https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
+          cd KernelSU-Next
+          git log --oneline -1
+          # Kbuild derives KSU_VERSION from the commit count, so history must be complete
+          git fetch --unshallow --tags 2>/dev/null || git fetch --tags
+          echo "commit count: $(git rev-list --count HEAD)"
+          echo "tag: $(git describe --tags 2>/dev/null)"
+
+      - name: Apply kernel + KernelSU patches
+        run: |
+          set -e
+          cd kernel-src
+          for p in ../ci/patches/0*.patch; do
+            echo "== applying $(basename "$p")"
+            git apply --whitespace=nowarn "$p"
+          done
+          echo "== applying KernelSU local patches"
+          cd KernelSU-Next
+          for p in ../../ci/patches/ksunext/*.patch; do
+            echo "-- $(basename "$p")"
+            git apply --whitespace=nowarn "$p"
+          done
+          grep -n "track_throne(false)" kernel/supercalls.c | head -2
+
       - name: Install dtc 1.7.2
         run: |
           git clone --depth 1 --branch v1.7.2 https://github.com/dgibson/dtc.git dtc-src
@@ -72,32 +92,36 @@ jobs:
           tar -I zstd -xf /tmp/neutron.tar.zst -C "$HOME/toolchains/neutron-clang"
           "$HOME/toolchains/neutron-clang/bin/clang" --version
 
-      - name: Configure kernel
+      - name: Configure kernel (LOS 23.2 config, KSU enabled)
         run: |
           set -e
+          cd kernel-src
           export PATH="$HOME/toolchains/neutron-clang/bin:$PATH"
-          M="make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- DTC_EXT=/usr/local/bin/dtc"
+          M="make O=out ARrm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- DTC_EXT=/usr/local/bin/dtc"
+          # exactly what LineageOS uses for ginkgo
           $M vendor/trinket-perf_defconfig
           scripts/kconfig/merge_config.sh -m -O out out/.config \
             arch/arm64/configs/vendor/xiaomi-trinket.config \
             arch/arm64/configs/vendor/ginkgo.config
           $M olddefconfig
-          echo "--- KSU / device config ---"
-          grep -E "CONFIG_KSU|CONFIG_MACH_XIAOMI_C3J|CONFIG_BUILD_ARM64_DT_OVERLAY" out/.config
-          echo "--- kernel version ---"
+          echo "--- sanity: config that broke the first attempt ---"
+          grep -E "CONFIG_EROFS_FS=|CONFIG_LTO_CLANG=|CONFIG_WIREGUARD=|CONFIG_SHADOW_CALL_STACK=|CONFIG_MACH_XIAOMI_C3J=|CONFIG_BUILD_ARM64_DT_OVERLAY=" out/.config
+          echo "--- KSU ---"
+          grep -E "CONFIG_KSU|CONFIG_KSU_SUSFS" out/.config | head -20
           make -s kernelversion
 
       - name: Build kernel
         run: |
           set -o pipefail
+          cd kernel-src
           export PATH="$HOME/toolchains/neutron-clang/bin:$PATH"
-          make -j$(nproc) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+          make -j$(nproc) O=out ARrm64 LLVM=1 LLVM_IAS=1 \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             DTC_EXT=/usr/local/bin/dtc Image.gz dtbs 2>&1 | tail -60
           ls -la out/arch/arm64/boot/Image.gz
           find out/arch/arm64/boot/dts -name "ginkgo-trinket-overlay.dtbo" -o -name "trinket.dtb"
 
-      - name: Repack stock boot.img (kernel swap only, stock DTB kept)
+      - name: Repack stock boot.img with the new kernel
         env:
           LOS_DATE: ${{ github.event.inputs.los_build_date }}
         run: |
@@ -114,40 +138,36 @@ jobs:
           mkdir -p bootwork && cd bootwork
           cp ../stock-boot.img boot.img
           ../magiskboot unpack boot.img
-          ls -la
-          cp ../out/arch/arm64/boot/Image.gz kernel
+          # Keep the stock DTB + cmdline from the official image; only swap the kernel
+          cp ../kernel-src/out/arch/arm64/boot/Image.gz kernel
           ../magiskboot repack boot.img new-boot.img
           ls -la new-boot.img
 
       - name: Build flashable zips
         run: |
           set -e
-          # ksud matching the kernel's KSU version code (33024 = v3.1.0)
           curl -sL -o ksud "https://github.com/KernelSU-Next/KernelSU-Next/releases/download/$KSU_TAG/ksud-aarch64-linux-android"
           chmod +x ksud
 
           git clone --depth 1 https://github.com/osm0sis/AnyKernel3 anykernel
           rm -rf anykernel/.git
-          cp out/arch/arm64/boot/Image.gz anykernel/Image.gz
+          cp kernel-src/out/arch/arm64/boot/Image.gz anykernel/Image.gz
           cp ksud anykernel/ksud
-
           cp ci/anykernel.sh anykernel/anykernel.sh
+          ( cd anykernel && zip -r9 ../ginkgo-ksu-susfs-anykernel3.zip * )
 
-          cd anykernel && zip -r9 ../ginkgo-ksu-susfs-anykernel3.zip *
-
-          # standalone boot.img zip for fastboot flashing
-          mkdir -p ../fastboot && cp ../bootwork/new-boot.img ../fastboot/boot.img
-          cd ../fastboot && zip -q ../ginkgo-boot-fastboot.zip boot.img
+          mkdir -p fastboot && cp bootwork/new-boot.img fastboot/boot.img
+          ( cd fastboot && zip -q ../ginkgo-boot-fastboot.zip boot.img )
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ginkgo-ksu-susfs
+          name: ginkgo-ksu-susfs-los232
           path: |
             ginkgo-ksu-susfs-anykernel3.zip
             ginkgo-boot-fastboot.zip
             bootwork/new-boot.img
             stock-boot.img
-            out/arch/arm64/boot/Image.gz
-            out/.config
+            kernel-src/out/arch/arm64/boot/Image.gz
+            kernel-src/out/.config
           if-no-files-found: error

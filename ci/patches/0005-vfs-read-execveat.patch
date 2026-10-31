@@ -1,0 +1,95 @@
+From 77efa0b5c21652032fd64b72502fd92aa2848bb7 Mon Sep 17 00:00:00 2001
+From: Lin <lin@fnxln.com>
+Date: Fri, 29 May 2026 19:11:39 -0300
+Subject: [PATCH] kernel/fs: wire remaining KernelSU manual hooks (vfs_read +
+ execveat)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The initial manual-hook commit (a7479c8) covered sys_reboot, umount,
+seccomp counter and SELinux helpers — enough to compile against KSU
+and for the manager APK to probe the kernel. It was NOT enough to
+let KSU's userspace bootstrap fire on boot:
+
+- fs/read_write.c vfs_read: KSU intercepts init's reads of init.rc
+  to splice in the on-disk-invisible KSUD service block. Without
+  this hook the in-kernel KSU_RC text never reaches init's parser
+  and ksud is never exec'd at post-fs-data / boot-completed.
+
+- fs/exec.c do_execve + compat_do_execve: KSU's execveat handler
+  combines the ksud and sucompat passes. Without the manual hook,
+  the sucompat replacement of /system/bin/su -> /data/adb/ksud
+  never fires, so the manager APK's bootstrap shell (which calls
+  'su -g' to escalate) always falls through to no-op.
+
+Hooks gated on CONFIG_KSU and use the extern signatures that
+KernelSU-Next/v3.1.0-legacy-susfs's ksud.c and ksu.c expose for
+manual-hook builds. Discovered the missing wires by comparing
+against sidex15-kernel/v4.14.355-OpenELA-v7's manual-hook patches.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ fs/exec.c       | 11 +++++++++++
+ fs/read_write.c |  9 +++++++++
+ 2 files changed, 20 insertions(+)
+
+diff --git a/fs/exec.c b/fs/exec.c
+index 77fa6eae28ea..1ed00218180b 100644
+--- a/fs/exec.c
++++ b/fs/exec.c
+@@ -1895,12 +1895,20 @@ int do_execve_file(struct file *file, void *__argv, void *__envp)
+ 	return __do_execve_file(AT_FDCWD, NULL, argv, envp, 0, file);
+ }
+ 
++#ifdef CONFIG_KSU
++extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
++			       void *argv, void *envp, int *flags);
++#endif
++
+ int do_execve(struct filename *filename,
+ 	const char __user *const __user *__argv,
+ 	const char __user *const __user *__envp)
+ {
+ 	struct user_arg_ptr argv = { .ptr.native = __argv };
+ 	struct user_arg_ptr envp = { .ptr.native = __envp };
++#ifdef CONFIG_KSU
++	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);
++#endif
+ 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
+ }
+ 
+@@ -1928,6 +1936,9 @@ static int compat_do_execve(struct filename *filename,
+ 		.is_compat = true,
+ 		.ptr.compat = __envp,
+ 	};
++#ifdef CONFIG_KSU
++	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);
++#endif
+ 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
+ }
+ 
+diff --git a/fs/read_write.c b/fs/read_write.c
+index 0da6e4f19d7f..ade14139de7b 100644
+--- a/fs/read_write.c
++++ b/fs/read_write.c
+@@ -429,10 +429,19 @@ ssize_t kernel_read(struct file *file, void *buf, size_t count, loff_t *pos)
+ }
+ EXPORT_SYMBOL(kernel_read);
+ 
++#ifdef CONFIG_KSU
++extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
++			       size_t *count_ptr, loff_t **pos);
++#endif
++
+ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
+ {
+ 	ssize_t ret;
+ 
++#ifdef CONFIG_KSU
++	ksu_handle_vfs_read(&file, &buf, &count, &pos);
++#endif
++
+ 	if (!(file->f_mode & FMODE_READ))
+ 		return -EBADF;
+ 	if (!(file->f_mode & FMODE_CAN_READ))
