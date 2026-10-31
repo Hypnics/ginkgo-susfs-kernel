@@ -118,44 +118,7 @@ jobs:
           cp out/arch/arm64/boot/Image.gz anykernel/Image.gz
           cp ksud anykernel/ksud
 
-          cat > anykernel/anykernel.sh <<'AK'
-### AnyKernel3 Ramdisk Mod Script
-## ginkgo / willow — KernelSU-Next legacy + SUSFS
-
-properties() { '
-kernel.string=Redmi Note 8 (ginkgo) KSU-Next v3.1.0-legacy-susfs + SUSFS kernel
-do.devicecheck=1
-do.modules=0
-do.systemless=0
-do.cleanup=1
-do.cleanuponabort=0
-device.name1=ginkgo
-device.name2=willow
-device.name3=
-device.name4=
-device.name5=
-supported.versions=
-supported.patchlevels=
-supported.vendorpatchlevels=
-'; }
-
-## boot shell variables
-BLOCK=/dev/block/bootdevice/by-name/boot;
-IS_SLOT_DEVICE=0;
-RAMDISK_COMPRESSION=auto;
-PATCH_VBMETA_FLAG=auto;
-
-. tools/ak3-core.sh;
-
-split_boot;
-flash_boot;
-## end boot install
-
-## drop matching ksud so the kernel can exec it at post-fs-data
-if [ -d /data/adb ]; then
-  cp -f $AKHOME/ksud /data/adb/ksud 2>/dev/null && chmod 0755 /data/adb/ksud && ui_print "  -> ksud installed to /data/adb/ksud" || ui_print "  -> ksud copy skipped (data encrypted?)"
-fi
-AK
+          cp ci/anykernel.sh anykernel/anykernel.sh
 
           cd anykernel && zip -r9 ../ginkgo-ksu-susfs-anykernel3.zip *
 
