@@ -1,0 +1,177 @@
+name: Build KSU-Next + SUSFS kernel (ginkgo)
+
+on:
+  workflow_dispatch:
+    inputs:
+      los_build_date:
+        description: 'LineageOS 23.2 build date for stock boot.img (YYYYMMDD)'
+        required: false
+        default: '20261007'
+
+env:
+  LOS_URL: https://mirrorbits.lineageos.org/full/ginkgo
+  KSU_TAG: v3.1.0
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout kernel tree
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Apply KernelSU-Next local patches
+        run: bash patches/apply.sh
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc flex bison libssl-dev libncurses-dev \
+            zlib1g-dev git curl jq python3 unzip zip cpio xz-utils \
+            lz4 zstd libelf-dev device-tree-compiler \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          df -h /
+
+      - name: Install dtc 1.7.2
+        run: |
+          git clone --depth 1 --branch v1.7.2 https://github.com/dgibson/dtc.git dtc-src
+          make -C dtc-src -j$(nproc) NO_PYTHON=1 NO_YAML=1
+          sudo install -m755 dtc-src/dtc /usr/local/bin/dtc
+          sudo install -m755 dtc-src/dtc /usr/sbin/dtc
+          dtc --version
+
+      - name: Install Neutron Clang
+        run: |
+          mkdir -p "$HOME/toolchains/neutron-clang"
+          curl -sL -o /tmp/neutron.tar.zst \
+            https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/06092026/neutron-clang-06092026.tar.zst
+          tar -I zstd -xf /tmp/neutron.tar.zst -C "$HOME/toolchains/neutron-clang"
+          "$HOME/toolchains/neutron-clang/bin/clang" --version
+
+      - name: Configure kernel
+        run: |
+          set -e
+          export PATH="$HOME/toolchains/neutron-clang/bin:$PATH"
+          M="make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- DTC_EXT=/usr/local/bin/dtc"
+          $M vendor/trinket-perf_defconfig
+          scripts/kconfig/merge_config.sh -m -O out out/.config \
+            arch/arm64/configs/vendor/xiaomi-trinket.config \
+            arch/arm64/configs/vendor/ginkgo.config
+          $M olddefconfig
+          echo "--- KSU / device config ---"
+          grep -E "CONFIG_KSU|CONFIG_MACH_XIAOMI_C3J|CONFIG_BUILD_ARM64_DT_OVERLAY" out/.config
+          echo "--- kernel version ---"
+          make -s kernelversion
+
+      - name: Build kernel
+        run: |
+          set -o pipefail
+          export PATH="$HOME/toolchains/neutron-clang/bin:$PATH"
+          make -j$(nproc) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            DTC_EXT=/usr/local/bin/dtc Image.gz dtbs 2>&1 | tail -60
+          ls -la out/arch/arm64/boot/Image.gz
+          find out/arch/arm64/boot/dts -name "ginkgo-trinket-overlay.dtbo" -o -name "trinket.dtb"
+
+      - name: Repack stock boot.img (kernel swap only, stock DTB kept)
+        env:
+          LOS_DATE: ${{ github.event.inputs.los_build_date }}
+        run: |
+          set -e
+          curl -sL -o magisk.apk \
+            https://github.com/topjohnwu/Magisk/releases/download/v31.1/Magisk-v31.1.apk
+          unzip -o -q magisk.apk lib/x86_64/libmagiskboot.so -d mb
+          cp mb/lib/x86_64/libmagiskboot.so magiskboot
+          chmod +x magiskboot
+
+          curl -sL -o stock-boot.img "$LOS_URL/$LOS_DATE/boot.img"
+          sha256sum stock-boot.img
+
+          mkdir -p bootwork && cd bootwork
+          cp ../stock-boot.img boot.img
+          ../magiskboot unpack boot.img
+          ls -la
+          cp ../out/arch/arm64/boot/Image.gz kernel
+          ../magiskboot repack boot.img new-boot.img
+          ls -la new-boot.img
+
+      - name: Build flashable zips
+        run: |
+          set -e
+          # ksud matching the kernel's KSU version code (33024 = v3.1.0)
+          curl -sL -o ksud "https://github.com/KernelSU-Next/KernelSU-Next/releases/download/$KSU_TAG/ksud-aarch64-linux-android"
+          chmod +x ksud
+
+          git clone --depth 1 https://github.com/osm0sis/AnyKernel3 anykernel
+          rm -rf anykernel/.git
+          cp out/arch/arm64/boot/Image.gz anykernel/Image.gz
+          cp ksud anykernel/ksud
+
+          cat > anykernel/anykernel.sh <<'AK'
+### AnyKernel3 Ramdisk Mod Script
+## ginkgo / willow — KernelSU-Next legacy + SUSFS
+
+properties() { '
+kernel.string=Redmi Note 8 (ginkgo) KSU-Next v3.1.0-legacy-susfs + SUSFS kernel
+do.devicecheck=1
+do.modules=0
+do.systemless=0
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=ginkgo
+device.name2=willow
+device.name3=
+device.name4=
+device.name5=
+supported.versions=
+supported.patchlevels=
+supported.vendorpatchlevels=
+'; }
+
+## boot shell variables
+BLOCK=/dev/block/bootdevice/by-name/boot;
+IS_SLOT_DEVICE=0;
+RAMDISK_COMPRESSION=auto;
+PATCH_VBMETA_FLAG=auto;
+
+. tools/ak3-core.sh;
+
+split_boot;
+flash_boot;
+## end boot install
+
+## drop matching ksud so the kernel can exec it at post-fs-data
+if [ -d /data/adb ]; then
+  cp -f $AKHOME/ksud /data/adb/ksud 2>/dev/null && chmod 0755 /data/adb/ksud && ui_print "  -> ksud installed to /data/adb/ksud" || ui_print "  -> ksud copy skipped (data encrypted?)"
+fi
+AK
+
+          cd anykernel && zip -r9 ../ginkgo-ksu-susfs-anykernel3.zip *
+
+          # standalone boot.img zip for fastboot flashing
+          mkdir -p ../fastboot && cp ../bootwork/new-boot.img ../fastboot/boot.img
+          cd ../fastboot && zip -q ../ginkgo-boot-fastboot.zip boot.img
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ginkgo-ksu-susfs
+          path: |
+            ginkgo-ksu-susfs-anykernel3.zip
+            ginkgo-boot-fastboot.zip
+            bootwork/new-boot.img
+            stock-boot.img
+            out/arch/arm64/boot/Image.gz
+            out/.config
+          if-no-files-found: error
