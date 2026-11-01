@@ -23,7 +23,6 @@ jobs:
       - name: Checkout CI helpers
         uses: actions/checkout@v4
         with:
-          path: ci
           fetch-depth: 1
 
       - name: Free disk space
@@ -64,13 +63,13 @@ jobs:
         run: |
           set -e
           cd kernel-src
-          for p in ../ci/patches/0*.patch; do
+          for p in "$GITHUB_WORKSPACE"/ci/patches/0*.patch; do
             echo "== applying $(basename "$p")"
             git apply --whitespace=nowarn "$p"
           done
           echo "== applying KernelSU local patches"
           cd KernelSU-Next
-          for p in ../../ci/patches/ksunext/*.patch; do
+          for p in "$GITHUB_WORKSPACE"/ci/patches/ksunext/*.patch; do
             echo "-- $(basename "$p")"
             git apply --whitespace=nowarn "$p"
           done
@@ -97,7 +96,7 @@ jobs:
           set -e
           cd kernel-src
           export PATH="$HOME/toolchains/neutron-clang/bin:$PATH"
-          M="make O=out ARrm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- DTC_EXT=/usr/local/bin/dtc"
+          M="make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- DTC_EXT=/usr/local/bin/dtc"
           # exactly what LineageOS uses for ginkgo
           $M vendor/trinket-perf_defconfig
           scripts/kconfig/merge_config.sh -m -O out out/.config \
@@ -115,7 +114,7 @@ jobs:
           set -o pipefail
           cd kernel-src
           export PATH="$HOME/toolchains/neutron-clang/bin:$PATH"
-          make -j$(nproc) O=out ARrm64 LLVM=1 LLVM_IAS=1 \
+          make -j$(nproc) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             DTC_EXT=/usr/local/bin/dtc Image.gz dtbs 2>&1 | tail -60
           ls -la out/arch/arm64/boot/Image.gz
