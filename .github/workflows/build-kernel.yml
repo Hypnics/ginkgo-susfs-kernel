@@ -51,8 +51,13 @@ jobs:
       - name: Add KernelSU-Next submodule
         run: |
           cd kernel-src
-          git clone --branch v3.1.0-legacy https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
+          # Pin the exact submodule commit the SUSFS integration patches target
+          # (v3.1.0-legacy-susfs, KSU_VERSION 33024 = the v3.1.0 manager APK).
+          git init KernelSU-Next
           cd KernelSU-Next
+          git remote add origin https://github.com/KernelSU-Next/KernelSU-Next.git
+          git fetch --depth 1 origin ba4422f0556e10f40dda1887631d87a18ede4ec5
+          git checkout -q FETCH_HEAD
           git log --oneline -1
           # Kbuild derives KSU_VERSION from the commit count, so history must be complete
           git fetch --unshallow --tags 2>/dev/null || git fetch --tags
